@@ -1,0 +1,50 @@
+# Курьер уведомлений беты: сервер tulza-ru-2 не достаёт до api.telegram.org из России,
+# поэтому шлёт repository_dispatch (event_type "telegram", client_payload.text) сюда,
+# а GitHub пересылает текст в Telegram. Ключи — только в секретах репозитория.
+name: telegram
+on:
+  repository_dispatch:
+    types: [telegram]
+permissions:
+  contents: read
+jobs:
+  send:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Отправить в Telegram
+        env:
+          TEXT: ${{ github.event.client_payload.text }}
+          BOT: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          CHAT: ${{ secrets.TELEGRAM_CHAT_ID }}
+        run: |
+          python3 - <<'PY'
+          import json, os, sys, time, urllib.request
+          text = os.environ.get("TEXT") or ""
+          if not text.strip():
+              print("пустой текст — пропуск"); sys.exit(0)
+          bot, chat = os.environ["BOT"], os.environ["CHAT"]
+          # Telegram берёт до 4096 символов — длинное делим по строкам
+          parts, cur = [], ""
+          for line in text.split("\n"):
+              while len(line) > 4000:
+                  if cur: parts.append(cur); cur = ""
+                  parts.append(line[:4000]); line = line[4000:]
+              if len(cur) + len(line) + 1 > 4000:
+                  parts.append(cur); cur = ""
+              cur = (cur + "\n" + line) if cur else line
+          if cur: parts.append(cur)
+          for p in parts:
+              data = json.dumps({"chat_id": chat, "text": p, "disable_web_page_preview": True}).encode()
+              req = urllib.request.Request(f"https://api.telegram.org/bot{bot}/sendMessage", data=data,
+                                           headers={"Content-Type": "application/json"})
+              for attempt in range(3):
+                  try:
+                      with urllib.request.urlopen(req, timeout=20) as r:
+                          print("отправлено, код", r.status); break
+                  except Exception as e:
+                      print("попытка", attempt + 1, "не удалась:", type(e).__name__)
+                      time.sleep(3)
+              else:
+                  sys.exit(1)
+          PY
